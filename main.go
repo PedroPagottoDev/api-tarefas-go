@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
@@ -20,6 +22,7 @@ type Tarefa struct {
 var (
 	tarefas   = map[int]Tarefa{}
 	proximoID = 1
+	mu        sync.Mutex
 )
 
 // Calcula a soma de dois números passados com o  query params da URL
@@ -50,6 +53,9 @@ func listarTarefas(c *echo.Context) error {
 	filtro := c.QueryParam("feita")
 	lista := []Tarefa{}
 
+	mu.Lock()
+	defer mu.Unlock()
+
 	for _, t := range tarefas {
 		if filtro == "true" && !t.Feita {
 			continue
@@ -70,9 +76,13 @@ func criarTarefa(c *echo.Context) error {
 	if err := c.Bind(&tarefa); err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "JSON inválido"})
 	}
+
 	if tarefa.Titulo == "" {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "o título é obrigatório"})
 	}
+
+	mu.Lock()
+	defer mu.Unlock()
 
 	tarefa.ID = proximoID // o ID é gerado por nós, não vem de fora
 	proximoID++
@@ -88,6 +98,9 @@ func buscarTarefa(c *echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "id precisa ser um número"})
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
+
 	tarefa, existe := tarefas[id]
 	if !existe {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "tarefa não encontrada"})
@@ -102,6 +115,9 @@ func apagarTarefa(c *echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "id precisa ser um número"})
 	}
+
+	mu.Lock()
+	defer mu.Unlock()
 
 	if _, existe := tarefas[id]; !existe {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "tarefa não encontrada"})
@@ -119,6 +135,9 @@ func marcarFeita(c *echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "id precisa ser um número"})
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
+
 	tarefaAtual, existe := tarefas[id]
 
 	if !existe {
@@ -130,6 +149,31 @@ func marcarFeita(c *echo.Context) error {
 
 	return c.JSON(http.StatusOK, tarefaAtual)
 
+}
+
+// Busca a tarefa pelo texto da URL, se não encontrar, retorna 404
+func buscarPorTexto(c *echo.Context) error {
+	texto := c.QueryParam("q")
+	if texto == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "query param 'q' é obrigatório"})
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	textoMin := strings.ToLower(texto)
+
+	lista := []Tarefa{}
+
+	for _, t := range tarefas {
+		if strings.Contains(strings.ToLower(t.Titulo), textoMin) {
+			lista = append(lista, t)
+		}
+	}
+
+	sort.Slice(lista, func(i, j int) bool { return lista[i].ID < lista[j].ID })
+
+	return c.JSON(http.StatusOK, lista)
 }
 
 func main() {
@@ -148,6 +192,9 @@ func main() {
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "id precisa ser um número"})
 		}
+
+		mu.Lock()
+		defer mu.Unlock()
 
 		tarefaAtual, existe := tarefas[id]
 		if !existe {
@@ -186,6 +233,7 @@ func main() {
 	e.GET("/tarefas/:id", buscarTarefa)
 	e.DELETE("/tarefas/:id", apagarTarefa)
 	e.PATCH("/tarefas/:id/feita", marcarFeita)
+	e.GET("/tarefas/buscar", buscarPorTexto)
 
 	//inicia o servidor
 	if err := e.Start(":1323"); err != nil {
