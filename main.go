@@ -193,9 +193,6 @@ func main() {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "id precisa ser um número"})
 		}
 
-		mu.Lock()
-		defer mu.Unlock()
-
 		tarefaAtual, existe := tarefas[id]
 		if !existe {
 			return c.JSON(http.StatusNotFound, map[string]string{"error": "tarefa não encontrada"})
@@ -208,6 +205,9 @@ func main() {
 		if tarefa.Titulo == "" {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "o título é obrigatório"})
 		}
+
+		mu.Lock()
+		defer mu.Unlock()
 
 		tarefaAtual.Titulo = tarefa.Titulo
 		tarefas[id] = tarefaAtual
