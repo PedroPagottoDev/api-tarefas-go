@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,6 +91,10 @@ func criarTarefa(c *echo.Context) error {
 	proximoID++
 	tarefas[tarefa.ID] = tarefa
 
+	if err := salvar(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "falha ao salvar tarefas"})
+	}
+
 	return c.JSON(http.StatusCreated, tarefa)
 }
 
@@ -124,12 +131,16 @@ func apagarTarefa(c *echo.Context) error {
 	}
 
 	delete(tarefas, id)
+
+	if err := salvar(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "falha ao salvar tarefas"})
+	}
+
 	return c.JSON(http.StatusOK, map[string]string{"message": "Tarefa apagada com sucesso!"})
 }
 
-// marca se a tarefa foi feita pelo ID
+// marca a tarefa como feita pelo ID
 func marcarFeita(c *echo.Context) error {
-
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "id precisa ser um número"})
@@ -139,7 +150,6 @@ func marcarFeita(c *echo.Context) error {
 	defer mu.Unlock()
 
 	tarefaAtual, existe := tarefas[id]
-
 	if !existe {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "tarefa não encontrada"})
 	}
@@ -147,11 +157,14 @@ func marcarFeita(c *echo.Context) error {
 	tarefaAtual.Feita = true
 	tarefas[id] = tarefaAtual
 
-	return c.JSON(http.StatusOK, tarefaAtual)
+	if err := salvar(); err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "falha ao salvar tarefas"})
+	}
 
+	return c.JSON(http.StatusOK, tarefaAtual)
 }
 
-// Busca a tarefa pelo texto da URL, se não encontrar, retorna 404
+// busca tarefas cujo título contém o texto de ?q=, sem diferenciar maiúsculas
 func buscarPorTexto(c *echo.Context) error {
 	texto := c.QueryParam("q")
 	if texto == "" {
@@ -162,7 +175,6 @@ func buscarPorTexto(c *echo.Context) error {
 	defer mu.Unlock()
 
 	textoMin := strings.ToLower(texto)
-
 	lista := []Tarefa{}
 
 	for _, t := range tarefas {
@@ -176,6 +188,50 @@ func buscarPorTexto(c *echo.Context) error {
 	return c.JSON(http.StatusOK, lista)
 }
 
+// salva as tarefas em tarefas.json
+// chame só com o mu já trancado
+func salvar() error {
+	lista := []Tarefa{}
+	for _, t := range tarefas {
+		lista = append(lista, t)
+	}
+
+	dados, err := json.MarshalIndent(lista, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile("tarefas.json", dados, 0644)
+}
+
+// lê tarefas.json quando o servidor liga
+func carregar() error {
+	content, err := os.ReadFile("tarefas.json")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil // primeira vez: ainda não existe arquivo, e tudo bem
+	}
+	if err != nil {
+		return err
+	}
+
+	var lista []Tarefa
+	if err := json.Unmarshal(content, &lista); err != nil {
+		return err
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, t := range lista {
+		tarefas[t.ID] = t // coloca a tarefa de volta no map
+		if t.ID >= proximoID {
+			proximoID = t.ID + 1
+		}
+	}
+
+	return nil
+}
+
 func main() {
 	// cria o echo e configura o middleware
 	e := echo.New()
@@ -183,19 +239,19 @@ func main() {
 	e.Use(middleware.RequestLogger())
 	e.Use(middleware.Recover())
 
+	// carrega as tarefas do arquivo; se falhar, não liga o servidor
+	if err := carregar(); err != nil {
+		e.Logger.Error("falha ao carregar as tarefas", "error", err)
+		return
+	}
+
 	//handle e routes
 	e.PUT("/tarefas/:id", func(c *echo.Context) error {
 		var tarefa Tarefa
 
 		id, err := strconv.Atoi(c.Param("id"))
-
 		if err != nil {
 			return c.JSON(http.StatusBadRequest, map[string]string{"error": "id precisa ser um número"})
-		}
-
-		tarefaAtual, existe := tarefas[id]
-		if !existe {
-			return c.JSON(http.StatusNotFound, map[string]string{"error": "tarefa não encontrada"})
 		}
 
 		if err := c.Bind(&tarefa); err != nil {
@@ -209,11 +265,19 @@ func main() {
 		mu.Lock()
 		defer mu.Unlock()
 
+		tarefaAtual, existe := tarefas[id]
+		if !existe {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "tarefa não encontrada"})
+		}
+
 		tarefaAtual.Titulo = tarefa.Titulo
 		tarefas[id] = tarefaAtual
 
-		return c.JSON(http.StatusOK, tarefaAtual)
+		if err := salvar(); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": "falha ao salvar tarefas"})
+		}
 
+		return c.JSON(http.StatusOK, tarefaAtual)
 	})
 
 	e.GET("/", func(c *echo.Context) error {
